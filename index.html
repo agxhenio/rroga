@@ -32,7 +32,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     // --- TË DHËNAT ---
     const DEFAULT_CONFIG = { hourlyRate: 400, weeklyHours: 40 };
@@ -363,16 +363,70 @@
         );
       };
 
-      // Komponenti i Opsioneve
+      // Komponenti i Opsioneve me Import / Eksport JSON
       const SettingsTab = () => {
+        const fileInputRef = useRef(null);
+
         const handleSaveConfig = (e) => {
           setConfig({ ...config, [e.target.name]: Number(e.target.value) });
           showToast("Ruajtur automatikisht!");
         };
+
         const handleClearData = () => {
           if(window.confirm("KUJDES: Kjo do të fshijë TË GJITHA të dhënat tuaja. Jeni i sigurt?")) {
             setEntries([]); showToast("Të dhënat u fshinë!", "success");
           }
+        };
+
+        // Funksioni Eksport
+        const handleExportJSON = () => {
+          const exportData = {
+            version: '2.0',
+            exportDate: new Date().toISOString(),
+            config: config,
+            entries: entries
+          };
+          
+          const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `timeshift_backup_${getTodayStr()}.json`;
+          
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          
+          showToast("Të dhënat u eksportuan me sukses!");
+        };
+
+        // Funksioni Import
+        const handleImportJSON = (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            try {
+              const importedData = JSON.parse(event.target.result);
+              
+              if (importedData.entries && Array.isArray(importedData.entries)) {
+                setEntries(importedData.entries);
+              }
+              if (importedData.config) {
+                setConfig(importedData.config);
+              }
+              
+              showToast("Të dhënat u importuan me sukses!");
+            } catch (err) {
+              showToast("Skedari nuk është i saktë (Invalid JSON)!", "error");
+            }
+          };
+          reader.readAsText(file);
+          
+          // Reseto input-in në mënyrë që të mund të zgjidhet prap i njejti skedar nqs nevojitet
+          e.target.value = null;
         };
 
         return (
@@ -391,9 +445,27 @@
                 <input type="number" name="weeklyHours" value={config.weeklyHours} onChange={handleSaveConfig} className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" />
               </div>
             </div>
+
             <div className="bg-slate-800/50 p-6 rounded-[2rem] border border-slate-700/50 space-y-4 mt-6">
               <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Të Dhënat</h3>
-              <button onClick={handleClearData} className="w-full py-4 bg-red-900/30 text-red-400 rounded-2xl border border-red-900/50 flex items-center justify-center font-bold text-lg active:scale-95 transition-transform">
+              
+              <div className="grid grid-cols-2 gap-3 mb-2">
+                {/* Butoni i Eksportimit */}
+                <button onClick={handleExportJSON} className="w-full py-3 bg-emerald-900/30 text-emerald-400 rounded-2xl border border-emerald-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
+                  <i className="fa-solid fa-file-export mb-1 text-lg"></i>
+                  <span className="text-xs">Eksporto JSON</span>
+                </button>
+                
+                {/* Butoni i Importimit */}
+                <button onClick={() => fileInputRef.current.click()} className="w-full py-3 bg-blue-900/30 text-blue-400 rounded-2xl border border-blue-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
+                  <i className="fa-solid fa-file-import mb-1 text-lg"></i>
+                  <span className="text-xs">Importo JSON</span>
+                </button>
+                {/* Input-i i fshehur për ngarkimin e skedarit */}
+                <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportJSON} className="hidden" />
+              </div>
+
+              <button onClick={handleClearData} className="w-full py-4 mt-2 bg-red-900/30 text-red-400 rounded-2xl border border-red-900/50 flex items-center justify-center font-bold text-lg active:scale-95 transition-transform">
                 <i className="fa-solid fa-trash mr-2"></i> Fshi të gjitha
               </button>
             </div>
@@ -458,6 +530,4 @@
   </script>
 </body>
 </html>
-
-
 
