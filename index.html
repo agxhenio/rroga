@@ -1,31 +1,463 @@
-💼 TimeShift (Rroga) - Menaxhimi i Pagës
-Një aplikacion modern, i ndërtuar posaçërisht për t'u përdorur nga telefoni (Mobile-First, iOS Optimized), për të mbajtur shënim orët e punës, pushimet dhe për të llogaritur pagën mujore në kohë reale.
-🚀 Shiko Aplikacionin Live Këtu
-✨ Karakteristikat Kryesore
-• Llogaritje Komplekse e Pagës: Llogarit automatikisht pagën bazuar në orët e punuara, duke përfshirë:
-• Ditë normale pune (100%)
-• Punë në fundjavë (125%)
-• Punë në Ditë Feste Kombëtare (Llogaritje speciale: 125% e orëve të punuara + 8 orë kompensim fiks = ~225%).
-• Raporte Mjekësore (70% e pagesës për 8 orë).
-• Pushime Vjetore (100% e pagesës për 8 orë).
-• Dizajn për iPhone (iOS): Pamje Dark Mode, navigim në fund të ekranit (Bottom Nav) dhe një përvojë përdoruesi që ngjan fiks si një aplikacion nativ.
-• Ruajtje Lokale: Të gjitha të dhënat ruhen 100% në mënyrë të sigurt në telefonin tuaj (localStorage). Nuk ka nevojë për internet ose databazë për të funksionuar pasi të jetë hapur.
-• Bonuse dhe Zbritje: Mundësi për të shtuar bonuse manuale dhe shënime për çdo ditë.
-• Statistika të Shpejta: Pasqyrë e qartë e ditëve të punuara, totalit të orëve dhe të ardhurave për muajin aktual.
-🛠️ Teknologjitë e Përdorura
-Ky projekt është ndërtuar tërësisht brenda një skedari të vetëm (index.html) për thjeshtësi maksimale në hostim (pa patur nevojë për Node.js apo build tools).
-• React 18 (nëpërmjet CDN) - Për logjikën dhe menaxhimin e gjendjes (State Management).
-• Tailwind CSS (nëpërmjet CDN) - Për dizajnin dhe stilimin modern.
-• Babel (nëpërmjet CDN) - Për të përkthyer kodin JSX direkt në shfletues.
-• FontAwesome 6 - Për ikonat e aplikacionit.
-📱 Si ta instalosh në telefonin tënd (iPhone / Android)
-Meqenëse aplikacioni përdor teknologjinë PWA (Progressive Web App) falë meta-tags të përshtatshëm, mund ta kthesh në aplikacion të vërtetë:
-1. Hap linkun e projektit në Safari (ose Chrome): https://agxhenio.github.io/rroga/
-2. Shtyp butonin Share (Kutia me shigjetën lart në mes të ekranit në fund).
-3. Zgjidh opsionin "Add to Home Screen" (Shto në ekranin bazë).
-4. Kliko Add lart djathtas.
-5. Tani do të kesh një ikonë të re në telefonin tënd. Hape dhe shijo aplikacionin pa kornizat e shfletuesit!
-📄 Licenca
-Ky projekt është i licencuar nën Licencën MIT - shiko skedarin LICENSE për detaje. Kjo do të thotë që mund ta përdorësh, modifikosh dhe shpërndash lirisht kodin.
-🧑‍💻 Autori
-Krijuar nga agxhenio.
+<!DOCTYPE html>
+<html lang="sq">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>TimeShift</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- React & Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    /* Rregullime për iPhone */
+    .pb-safe { padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
+    body { -webkit-tap-highlight-color: transparent; }
+    
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-50 font-sans selection:bg-indigo-500/30">
+  
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // --- TË DHËNAT ---
+    const DEFAULT_CONFIG = { hourlyRate: 400, weeklyHours: 40 };
+    const TYPE_LABELS = {
+      work: "🏢 Ditë pune",
+      work_weekend: "🏖️ Fundjavë (Punë)",
+      work_holiday: "🎉 Festë (Punë)",
+      leave: "🌴 Pushim Vjetor",
+      sick: "🤒 Raport Mjekësor",
+      holiday_off: "🎈 Festë (Pushim)"
+    };
+    const BREAK_OPTIONS = [
+      { label: "0m", value: 0 },
+      { label: "15m", value: 15 },
+      { label: "30m", value: 30 },
+      { label: "1h", value: 60 },
+      { label: "Tjetër", value: -1 }
+    ];
+
+    // --- HOOK PËR LOCAL STORAGE ---
+    function useLocalStorage(key, initialValue) {
+      const [storedValue, setStoredValue] = useState(() => {
+        try {
+          const item = window.localStorage.getItem(key);
+          return item ? JSON.parse(item) : initialValue;
+        } catch (error) {
+          return initialValue;
+        }
+      });
+      const setValue = (value) => {
+        try {
+          const valueToStore = value instanceof Function ? value(storedValue) : value;
+          setStoredValue(valueToStore);
+          window.localStorage.setItem(key, JSON.stringify(valueToStore));
+        } catch (error) {}
+      };
+      return [storedValue, setValue];
+    }
+
+    // --- APLIKACIONI KRYESOR ---
+    function TimeShiftApp() {
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [entries, setEntries] = useLocalStorage('timeshift_entries_v2', []);
+      const [config, setConfig] = useLocalStorage('timeshift_config_v2', DEFAULT_CONFIG);
+      const [toast, setToast] = useState(null);
+
+      const showToast = (msg, type = 'success') => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(null), 2500);
+      };
+
+      const getTodayStr = () => new Date().toISOString().split('T')[0];
+
+      // --- LLOGARITJET (TË PËRDITËSUARA PËR 225%) ---
+      const calculateEntryStats = (entry) => {
+        let hours = 0; 
+        let pay = 0; 
+        let multiplier = 1; 
+        let baseCompensation = 0; // Për kompensimet fikse të festave
+        
+        // Llogaritja e orëve fizike të punuara
+        if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
+          const start = new Date(`2000-01-01T${entry.startTime}`);
+          const end = new Date(`2000-01-01T${entry.endTime}`);
+          let diff = (end - start) / (1000 * 60 * 60);
+          if (diff < 0) diff += 24;
+          const breakHours = (entry.breakMinutes || 0) / 60;
+          hours = Math.max(0, diff - breakHours);
+        }
+
+        // Përcaktimi i koeficientëve
+        switch (entry.type) {
+          case 'work': 
+            multiplier = 1; 
+            break;
+          case 'work_weekend': 
+            multiplier = 1.25; 
+            break;
+          case 'work_holiday': 
+            // 125% e orëve të punuara + 8 orë kompensim fiks = Praktikisht 225% nëse punohet 8 orë
+            multiplier = 1.25; 
+            baseCompensation = 8 * config.hourlyRate; 
+            break;
+          case 'leave': 
+            hours = 8; 
+            multiplier = 1; 
+            break;
+          case 'sick': 
+            hours = 8; 
+            multiplier = 0.7; 
+            break;
+          case 'holiday_off': 
+            hours = 8; 
+            multiplier = 1; 
+            break;
+        }
+        
+        pay = (hours * config.hourlyRate * multiplier) + baseCompensation + (Number(entry.bonus) || 0);
+        return { hours, pay };
+      };
+
+      // Komponenti i Pasqyrës
+      const Dashboard = () => {
+        const monthEntries = entries.filter(e => {
+          const d = new Date(e.date);
+          return d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear();
+        });
+        let totalHours = 0; let totalPay = 0; let daysWorked = 0;
+        monthEntries.forEach(e => {
+          const stats = calculateEntryStats(e);
+          totalHours += stats.hours; totalPay += stats.pay;
+          if (e.type.startsWith('work')) daysWorked++;
+        });
+
+        return (
+          <div className="p-5 space-y-6 pb-28 animate-fade-in">
+            <header className="mb-6 pt-4">
+              <h1 className="text-3xl font-bold text-white tracking-tight">Pasqyra</h1>
+              <p className="text-slate-400 text-sm">Përmbledhja e këtij muaji</p>
+            </header>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="bg-gradient-to-br from-indigo-900/50 to-blue-900/30 p-5 rounded-3xl border border-indigo-500/20 shadow-lg">
+                <div className="text-indigo-400 mb-2"><i className="fa-solid fa-clock mr-2"></i><span className="font-medium text-sm">Orë Totale</span></div>
+                <div className="text-3xl font-bold text-white">{totalHours.toFixed(1)}</div>
+              </div>
+              <div className="bg-gradient-to-br from-amber-900/50 to-orange-900/30 p-5 rounded-3xl border border-amber-500/20 shadow-lg">
+                <div className="text-amber-400 mb-2"><i className="fa-solid fa-wallet mr-2"></i><span className="font-medium text-sm">Të Ardhura</span></div>
+                <div className="text-2xl font-bold text-white">{totalPay.toLocaleString()} <span className="text-sm font-normal text-amber-200">ALL</span></div>
+              </div>
+            </div>
+            <div className="bg-slate-800/50 rounded-3xl p-5 border border-slate-700/50 shadow-sm">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-white font-medium"><i className="fa-regular fa-calendar mr-2 text-slate-400"></i>Ditë Pune</h3>
+                <span className="text-xl font-bold text-indigo-400">{daysWorked}</span>
+              </div>
+              <div className="w-full bg-slate-700 rounded-full h-2.5">
+                <div className="bg-indigo-500 h-2.5 rounded-full" style={{ width: `${Math.min((daysWorked/22)*100, 100)}%` }}></div>
+              </div>
+              <p className="text-xs text-slate-500 mt-3 text-right">~22 ditë pune në muaj</p>
+            </div>
+          </div>
+        );
+      };
+
+      // Komponenti i Shtimit/Ndryshimit
+      const AddEntry = ({ editData = null, onSaveComplete = null }) => {
+        const [formData, setFormData] = useState(editData || {
+          id: Date.now().toString(), date: getTodayStr(), type: 'work',
+          startTime: '08:00', endTime: '16:00', breakMinutes: 0, customBreak: '', bonus: '', note: ''
+        });
+
+        const isWork = formData.type.startsWith('work');
+        const isCustomBreak = formData.breakMinutes === -1;
+
+        const handleSave = () => {
+          if (!formData.date) return showToast("Zgjidhni datën!", "error");
+          const finalData = { ...formData, breakMinutes: isCustomBreak ? Number(formData.customBreak || 0) : formData.breakMinutes };
+          if (editData) {
+            setEntries(entries.map(e => e.id === editData.id ? finalData : e));
+            showToast("U përditësua me sukses!");
+            if (onSaveComplete) onSaveComplete();
+          } else {
+            setEntries([...entries, { ...finalData, id: Date.now().toString() }]);
+            showToast("U shtua me sukses!");
+            setActiveTab('history');
+          }
+        };
+
+        return (
+          <div className="p-5 space-y-5 pb-28 animate-fade-in">
+            <header className="mb-4 pt-4">
+              <h1 className="text-3xl font-bold text-white tracking-tight">{editData ? 'Ndrysho' : 'Shto Ditë'}</h1>
+            </header>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-400 uppercase ml-1">Data</label>
+                  <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-400 uppercase ml-1">Lloji</label>
+                  <select value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none">
+                    {Object.entries(TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                  </select>
+                </div>
+              </div>
+              {isWork && (
+                <div className="p-5 bg-slate-800/40 rounded-3xl border border-slate-700/50 space-y-5">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-clock mr-1"></i> Fillimi</label>
+                      <input type="time" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})} className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-clock mr-1"></i> Mbarimi</label>
+                      <input type="time" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})} className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-mug-hot mr-1"></i> Pushimi</label>
+                    <div className="flex flex-wrap gap-2">
+                      {BREAK_OPTIONS.map(opt => (
+                        <button key={opt.value} onClick={() => setFormData({...formData, breakMinutes: opt.value})} className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${formData.breakMinutes === opt.value ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    {isCustomBreak && <input type="number" placeholder="Minuta..." value={formData.customBreak} onChange={e => setFormData({...formData, customBreak: e.target.value})} className="w-full mt-3 bg-slate-900/50 text-white p-4 rounded-2xl border border-amber-500/50 outline-none" />}
+                  </div>
+                </div>
+              )}
+              <div className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-amber-400 uppercase ml-1"><i className="fa-solid fa-gift mr-1"></i> Bonus (Lekë)</label>
+                  <input type="number" placeholder="0" value={formData.bonus} onChange={e => setFormData({...formData, bonus: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-file-lines mr-1"></i> Shënim</label>
+                  <input type="text" placeholder="Psh. Projekt i ri..." value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                </div>
+              </div>
+              <button onClick={handleSave} className="w-full py-4 mt-6 bg-indigo-600 active:bg-indigo-700 text-white font-bold rounded-2xl shadow-lg shadow-indigo-500/30 text-lg transition-transform active:scale-95">
+                <i className="fa-solid fa-circle-check mr-2"></i> Ruaj të Dhënat
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      // Komponenti i Historisë
+      const History = () => {
+        const [editingEntry, setEditingEntry] = useState(null);
+        const sortedEntries = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        const deleteEntry = (id) => {
+          if(window.confirm("Je i sigurt që do ta fshish këtë ditë?")) {
+            setEntries(entries.filter(e => e.id !== id));
+            setEditingEntry(null);
+            showToast("U fshi!", "success");
+          }
+        };
+
+        if (editingEntry) {
+          return (
+            <div className="relative animate-fade-in">
+              <button onClick={() => setEditingEntry(null)} className="absolute top-8 right-5 z-10 p-2 bg-slate-800 rounded-full text-slate-300 w-10 h-10 flex items-center justify-center shadow-lg"><i className="fa-solid fa-times"></i></button>
+              <AddEntry editData={editingEntry} onSaveComplete={() => setEditingEntry(null)} />
+              <div className="px-5 pb-28">
+                <button onClick={() => deleteEntry(editingEntry.id)} className="w-full py-4 bg-red-900/40 text-red-400 font-bold rounded-2xl border border-red-900/50">
+                  <i className="fa-solid fa-trash mr-2"></i> Fshi këtë regjistrim
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="p-5 space-y-4 pb-28 animate-fade-in">
+            <header className="mb-6 pt-4">
+              <h1 className="text-3xl font-bold text-white tracking-tight">Historia</h1>
+            </header>
+            {sortedEntries.length === 0 ? (
+              <div className="text-center py-10 text-slate-500">Nuk ka të dhëna ende.</div>
+            ) : (
+              <div className="space-y-3">
+                {sortedEntries.map(entry => {
+                  const stats = calculateEntryStats(entry);
+                  const isWork = entry.type.startsWith('work');
+                  return (
+                    <div key={entry.id} onClick={() => setEditingEntry(entry)} className="bg-slate-800/60 p-4 rounded-3xl border border-slate-700/50 flex items-center justify-between active:scale-[0.98] transition-transform cursor-pointer shadow-sm">
+                      <div>
+                        <div className="text-white font-medium mb-1 text-lg">{entry.date.split('-').reverse().join('/')}</div>
+                        <div className="flex items-center text-xs text-slate-400 space-x-2">
+                          <span className="bg-slate-700/50 px-2.5 py-1 rounded-md text-indigo-300">{TYPE_LABELS[entry.type].split(' ')[0]} {isWork ? `${stats.hours.toFixed(1)}h` : '8h'}</span>
+                          {entry.bonus && <span className="text-amber-400"><i className="fa-solid fa-gift mr-1"></i> +{entry.bonus}</span>}
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end">
+                        <span className="text-emerald-400 font-bold text-lg">{stats.pay.toLocaleString()} L</span>
+                        <i className="fa-solid fa-chevron-right text-slate-500 mt-2 text-sm"></i>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      };
+
+      // Komponenti i Pagës
+      const Salary = () => {
+        const monthEntries = entries.filter(e => {
+          const d = new Date(e.date);
+          return d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear();
+        });
+        let totalPay = 0; let basePay = 0; let bonusPay = 0;
+        monthEntries.forEach(e => {
+          const stats = calculateEntryStats(e);
+          totalPay += stats.pay;
+          if (e.bonus) bonusPay += Number(e.bonus);
+          basePay += (stats.pay - (Number(e.bonus) || 0));
+        });
+
+        return (
+          <div className="p-5 space-y-6 pb-28 animate-fade-in">
+            <header className="mb-6 pt-4">
+              <h1 className="text-3xl font-bold text-white tracking-tight">Paga ime</h1>
+              <p className="text-slate-400 text-sm">Përllogaritja për muajin aktual</p>
+            </header>
+            <div className="bg-gradient-to-b from-emerald-900/50 to-slate-900 p-8 rounded-[2rem] border border-emerald-500/20 text-center shadow-xl">
+              <p className="text-emerald-400/80 text-sm font-medium uppercase tracking-wider mb-2">Totali i Përllogaritur</p>
+              <h2 className="text-5xl font-black text-white mb-2">{totalPay.toLocaleString()}</h2>
+              <span className="text-xl text-emerald-500 font-medium">Lekë (ALL)</span>
+            </div>
+            <div className="space-y-3 mt-8">
+              <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider pl-2 mb-3">Detajet e fitimit</h3>
+              <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-slate-700/50">
+                <div className="flex items-center text-slate-300"><i className="fa-solid fa-briefcase text-indigo-400 text-lg w-8"></i> Paga Bazë</div>
+                <div className="font-bold text-white text-lg">{basePay.toLocaleString()} L</div>
+              </div>
+              <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-slate-700/50">
+                <div className="flex items-center text-slate-300"><i className="fa-solid fa-gift text-amber-400 text-lg w-8"></i> Bonuse & Shtesa</div>
+                <div className="font-bold text-amber-400 text-lg">+{bonusPay.toLocaleString()} L</div>
+              </div>
+            </div>
+          </div>
+        );
+      };
+
+      // Komponenti i Opsioneve
+      const SettingsTab = () => {
+        const handleSaveConfig = (e) => {
+          setConfig({ ...config, [e.target.name]: Number(e.target.value) });
+          showToast("Ruajtur automatikisht!");
+        };
+        const handleClearData = () => {
+          if(window.confirm("KUJDES: Kjo do të fshijë TË GJITHA të dhënat tuaja. Jeni i sigurt?")) {
+            setEntries([]); showToast("Të dhënat u fshinë!", "success");
+          }
+        };
+
+        return (
+          <div className="p-5 space-y-6 pb-28 animate-fade-in">
+            <header className="mb-6 pt-4">
+              <h1 className="text-3xl font-bold text-white tracking-tight">Opsione</h1>
+            </header>
+            <div className="bg-slate-800/50 p-6 rounded-[2rem] border border-slate-700/50 space-y-5">
+              <h3 className="text-sm font-medium text-indigo-400 uppercase tracking-wider">Tarifat</h3>
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300 ml-1">Pagesa për Orë (Lekë)</label>
+                <input type="number" name="hourlyRate" value={config.hourlyRate} onChange={handleSaveConfig} className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300 ml-1">Orët Javore Standarte</label>
+                <input type="number" name="weeklyHours" value={config.weeklyHours} onChange={handleSaveConfig} className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" />
+              </div>
+            </div>
+            <div className="bg-slate-800/50 p-6 rounded-[2rem] border border-slate-700/50 space-y-4 mt-6">
+              <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Të Dhënat</h3>
+              <button onClick={handleClearData} className="w-full py-4 bg-red-900/30 text-red-400 rounded-2xl border border-red-900/50 flex items-center justify-center font-bold text-lg active:scale-95 transition-transform">
+                <i className="fa-solid fa-trash mr-2"></i> Fshi të gjitha
+              </button>
+            </div>
+          </div>
+        );
+      };
+
+      return (
+        <div className="max-w-md mx-auto min-h-screen relative bg-slate-900 shadow-2xl overflow-x-hidden">
+          
+          <div className="min-h-screen">
+            {activeTab === 'dashboard' && <Dashboard />}
+            {activeTab === 'add' && <AddEntry />}
+            {activeTab === 'history' && <History />}
+            {activeTab === 'salary' && <Salary />}
+            {activeTab === 'settings' && <SettingsTab />}
+          </div>
+
+          {toast && (
+            <div className="fixed top-8 left-1/2 transform -translate-x-1/2 z-50 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl border border-slate-700 flex items-center space-x-3">
+              <i className={`fa-solid ${toast.type === 'success' ? 'fa-circle-check text-emerald-400' : 'fa-circle-exclamation text-amber-400'} text-xl`}></i>
+              <span className="font-medium">{toast.msg}</span>
+            </div>
+          )}
+
+          <nav className="fixed bottom-0 w-full max-w-md bg-slate-900/90 backdrop-blur-xl border-t border-slate-800 pb-safe pt-2 px-2 z-40">
+            <div className="flex justify-around items-center h-16">
+              <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'dashboard' ? 'text-indigo-400' : 'text-slate-500'}`}>
+                <i className="fa-solid fa-house text-xl"></i>
+                <span className="text-[10px] font-medium">Pasqyra</span>
+              </button>
+              
+              <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'history' ? 'text-indigo-400' : 'text-slate-500'}`}>
+                <i className="fa-solid fa-list-ul text-xl"></i>
+                <span className="text-[10px] font-medium">Historia</span>
+              </button>
+              
+              <div className="relative -top-6">
+                <button onClick={() => setActiveTab('add')} className={`w-14 h-14 rounded-full shadow-lg shadow-indigo-500/30 text-white flex items-center justify-center transition-transform active:scale-90 ${activeTab === 'add' ? 'bg-indigo-500 scale-110' : 'bg-indigo-600'}`}>
+                  <i className="fa-solid fa-plus text-2xl"></i>
+                </button>
+              </div>
+
+              <button onClick={() => setActiveTab('salary')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'salary' ? 'text-indigo-400' : 'text-slate-500'}`}>
+                <i className="fa-solid fa-wallet text-xl"></i>
+                <span className="text-[10px] font-medium">Paga</span>
+              </button>
+              
+              <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'settings' ? 'text-indigo-400' : 'text-slate-500'}`}>
+                <i className="fa-solid fa-gear text-xl"></i>
+                <span className="text-[10px] font-medium">Opsione</span>
+              </button>
+            </div>
+          </nav>
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<TimeShiftApp />);
+  </script>
+</body>
+</html>
+
+
+
