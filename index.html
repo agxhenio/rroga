@@ -48,6 +48,9 @@
       { label: "1h", value: 60 },
       { label: "Tjetër", value: -1 }
     ];
+    
+    // Emrat e muajve në Shqip
+    const MONTH_NAMES = ["Janar", "Shkurt", "Mars", "Prill", "Maj", "Qershor", "Korrik", "Gusht", "Shtator", "Tetor", "Nëntor", "Dhjetor"];
 
     // --- HOOK PËR LOCAL STORAGE ---
     function useLocalStorage(key, initialValue) {
@@ -75,6 +78,9 @@
       const [entries, setEntries] = useLocalStorage('timeshift_entries_v2', []);
       const [config, setConfig] = useLocalStorage('timeshift_config_v2', DEFAULT_CONFIG);
       const [toast, setToast] = useState(null);
+      
+      // Gjendja për muajin që po shikohet (Navigimi i muajve)
+      const [viewDate, setViewDate] = useState(new Date());
 
       const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
@@ -82,39 +88,43 @@
       };
 
       const getTodayStr = () => new Date().toISOString().split('T')[0];
+      
+      // Funksionet për ndryshimin e muajit
+      const changeMonth = (offset) => {
+        setViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
+      };
 
-      // --- LLOGARITJET (TË PËRDITËSUARA ME 3 FASHA ORARE) ---
+      const formatMonthYear = (date) => {
+        return `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
+      };
+
+      // --- LLOGARITJET (ME 3 FASHA ORARE) ---
       const calculateEntryStats = (entry) => {
         let totalHours = 0; 
         let pay = 0; 
         let baseCompensation = 0;
         
-        // Koeficientët bazë (Ditë normale pune)
         let multNormal = 1.00;  // 100% (06:00 - 19:00)
         let multEvening = 1.20; // 120% (19:00 - 22:00)
         let multNight = 1.50;   // 150% (22:00 - 06:00)
 
-        // Ndryshimi i koeficientëve për Fundjavë / Festa
         if (entry.type === 'work_weekend' || entry.type === 'work_holiday') {
-          multNormal = 1.25;  // 125%
-          multEvening = 1.45; // 145%
-          multNight = 1.75;   // 175%
+          multNormal = 1.25;  
+          multEvening = 1.45; 
+          multNight = 1.75;   
         }
 
-        // Festa kombëtare merr + 8 orë kompensim fiks (1 ditë pune)
         if (entry.type === 'work_holiday') {
           baseCompensation = 8 * config.hourlyRate; 
         }
 
-        // Llogaritjet për ditët pa orare (Leje, Raporte, Festa pushim)
         if (['leave', 'holiday_off'].includes(entry.type)) {
           return { hours: 8, pay: (8 * config.hourlyRate * 1.0) + (Number(entry.bonus) || 0) };
         }
         if (entry.type === 'sick') {
-          return { hours: 8, pay: (8 * config.hourlyRate * 0.7) + (Number(entry.bonus) || 0) }; // 70%
+          return { hours: 8, pay: (8 * config.hourlyRate * 0.7) + (Number(entry.bonus) || 0) }; 
         }
 
-        // Llogaritja e detajuar për ditët me orar pune
         if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
           const [sHour, sMin] = entry.startTime.split(':').map(Number);
           const [eHour, eMin] = entry.endTime.split(':').map(Number);
@@ -122,14 +132,10 @@
           const start = sHour + (sMin / 60);
           let end = eHour + (eMin / 60);
 
-          // Rregullimi nëse turni kalon mesnatën (psh. mbaron në 02:00 të mëngjesit)
           if (end < start) end += 24;
 
-          // Funksion për të gjetur orët e mbivendosura (Overlap)
           const getOverlap = (s1, e1, s2, e2) => Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
 
-          // Nxjerrja e orëve bruto për secilën fashë
-          // Përdorim orare deri në 48h për të mbuluar turnet që kalojnë mesnatën
           let rawNormal = getOverlap(start, end, 6, 19) + getOverlap(start, end, 30, 43);
           let rawEvening = getOverlap(start, end, 19, 22) + getOverlap(start, end, 43, 46);
           let rawNight = getOverlap(start, end, 0, 6) + getOverlap(start, end, 22, 30) + getOverlap(start, end, 46, 54);
@@ -137,12 +143,10 @@
           const grossHours = rawNormal + rawEvening + rawNight;
           const breakHours = (entry.breakMinutes || 0) / 60;
           
-          // Orët neto të punuara pasi hiqet pushimi
           totalHours = Math.max(0, grossHours - breakHours);
 
           let actualNormal = 0, actualEvening = 0, actualNight = 0;
 
-          // Zbresim pushimin në mënyrë proporcionale nga të gjitha fashat e punuara
           if (grossHours > 0) {
             const ratio = totalHours / grossHours;
             actualNormal = rawNormal * ratio;
@@ -150,7 +154,6 @@
             actualNight = rawNight * ratio;
           }
 
-          // Përllogaritja finale e pagesës për secilën fashë
           const payNormal = actualNormal * config.hourlyRate * multNormal;
           const payEvening = actualEvening * config.hourlyRate * multEvening;
           const payNight = actualNight * config.hourlyRate * multNight;
@@ -161,12 +164,29 @@
         return { hours: totalHours, pay };
       };
 
+      // Komponent i përbashkët për navigimin e muajit
+      const MonthSelector = () => (
+        <div className="flex items-center justify-between bg-slate-800/60 p-2 rounded-2xl border border-slate-700/50 mb-6 shadow-sm">
+          <button onClick={() => changeMonth(-1)} className="w-12 h-12 rounded-xl bg-slate-700/50 flex items-center justify-center text-slate-300 active:bg-slate-600 active:scale-95 transition-all">
+            <i className="fa-solid fa-chevron-left"></i>
+          </button>
+          <span className="text-xl font-bold text-white tracking-wide">
+            {formatMonthYear(viewDate)}
+          </span>
+          <button onClick={() => changeMonth(1)} className="w-12 h-12 rounded-xl bg-slate-700/50 flex items-center justify-center text-slate-300 active:bg-slate-600 active:scale-95 transition-all">
+            <i className="fa-solid fa-chevron-right"></i>
+          </button>
+        </div>
+      );
+
       // Komponenti i Pasqyrës
       const Dashboard = () => {
         const monthEntries = entries.filter(e => {
           const d = new Date(e.date);
-          return d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear();
+          // Filtrojmë bazuar tek muaji i zgjedhur në UI, jo muaji aktual real
+          return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
         });
+        
         let totalHours = 0; let totalPay = 0; let daysWorked = 0;
         monthEntries.forEach(e => {
           const stats = calculateEntryStats(e);
@@ -175,11 +195,13 @@
         });
 
         return (
-          <div className="p-5 space-y-6 pb-28 animate-fade-in">
-            <header className="mb-6 pt-4">
+          <div className="p-5 space-y-4 pb-28 animate-fade-in">
+            <header className="mb-2 pt-4">
               <h1 className="text-3xl font-bold text-white tracking-tight">Pasqyra</h1>
-              <p className="text-slate-400 text-sm">Përmbledhja e këtij muaji</p>
             </header>
+            
+            <MonthSelector />
+            
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-gradient-to-br from-indigo-900/50 to-blue-900/30 p-5 rounded-3xl border border-indigo-500/20 shadow-lg">
                 <div className="text-indigo-400 mb-2"><i className="fa-solid fa-clock mr-2"></i><span className="font-medium text-sm">Orë Totale</span></div>
@@ -190,7 +212,7 @@
                 <div className="text-2xl font-bold text-white">{totalPay.toLocaleString()} <span className="text-sm font-normal text-amber-200">ALL</span></div>
               </div>
             </div>
-            <div className="bg-slate-800/50 rounded-3xl p-5 border border-slate-700/50 shadow-sm">
+            <div className="bg-slate-800/50 rounded-3xl p-5 border border-slate-700/50 shadow-sm mt-2">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-white font-medium"><i className="fa-regular fa-calendar mr-2 text-slate-400"></i>Ditë Pune</h3>
                 <span className="text-xl font-bold text-indigo-400">{daysWorked}</span>
@@ -292,7 +314,14 @@
       // Komponenti i Historisë
       const History = () => {
         const [editingEntry, setEditingEntry] = useState(null);
-        const sortedEntries = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+        
+        // Filtrojmë edhe historinë sipas muajit të zgjedhur
+        const monthEntries = entries.filter(e => {
+          const d = new Date(e.date);
+          return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
+        });
+        
+        const sortedEntries = [...monthEntries].sort((a, b) => new Date(b.date) - new Date(a.date));
 
         const deleteEntry = (id) => {
           if(window.confirm("Je i sigurt që do ta fshish këtë ditë?")) {
@@ -318,11 +347,14 @@
 
         return (
           <div className="p-5 space-y-4 pb-28 animate-fade-in">
-            <header className="mb-6 pt-4">
+            <header className="mb-2 pt-4">
               <h1 className="text-3xl font-bold text-white tracking-tight">Historia</h1>
             </header>
+            
+            <MonthSelector />
+            
             {sortedEntries.length === 0 ? (
-              <div className="text-center py-10 text-slate-500">Nuk ka të dhëna ende.</div>
+              <div className="text-center py-10 text-slate-500 bg-slate-800/30 rounded-3xl border border-slate-700/30">Nuk ka të dhëna për këtë muaj.</div>
             ) : (
               <div className="space-y-3">
                 {sortedEntries.map(entry => {
@@ -354,8 +386,9 @@
       const Salary = () => {
         const monthEntries = entries.filter(e => {
           const d = new Date(e.date);
-          return d.getMonth() === new Date().getMonth() && d.getFullYear() === new Date().getFullYear();
+          return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
         });
+        
         let totalPay = 0; let basePay = 0; let bonusPay = 0;
         monthEntries.forEach(e => {
           const stats = calculateEntryStats(e);
@@ -365,11 +398,13 @@
         });
 
         return (
-          <div className="p-5 space-y-6 pb-28 animate-fade-in">
-            <header className="mb-6 pt-4">
+          <div className="p-5 space-y-4 pb-28 animate-fade-in">
+            <header className="mb-2 pt-4">
               <h1 className="text-3xl font-bold text-white tracking-tight">Paga ime</h1>
-              <p className="text-slate-400 text-sm">Përllogaritja për muajin aktual</p>
             </header>
+            
+            <MonthSelector />
+            
             <div className="bg-gradient-to-b from-emerald-900/50 to-slate-900 p-8 rounded-[2rem] border border-emerald-500/20 text-center shadow-xl">
               <p className="text-emerald-400/80 text-sm font-medium uppercase tracking-wider mb-2">Totali i Përllogaritur</p>
               <h2 className="text-5xl font-black text-white mb-2">{totalPay.toLocaleString()}</h2>
@@ -452,7 +487,6 @@
           };
           reader.readAsText(file);
           
-          // Reseto input-in në mënyrë që të mund të zgjidhet prap i njejti skedar nqs nevojitet
           e.target.value = null;
         };
 
@@ -477,18 +511,15 @@
               <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Të Dhënat</h3>
               
               <div className="grid grid-cols-2 gap-3 mb-2">
-                {/* Butoni i Eksportimit */}
                 <button onClick={handleExportJSON} className="w-full py-3 bg-emerald-900/30 text-emerald-400 rounded-2xl border border-emerald-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
                   <i className="fa-solid fa-file-export mb-1 text-lg"></i>
                   <span className="text-xs">Eksporto JSON</span>
                 </button>
                 
-                {/* Butoni i Importimit */}
                 <button onClick={() => fileInputRef.current.click()} className="w-full py-3 bg-blue-900/30 text-blue-400 rounded-2xl border border-blue-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
                   <i className="fa-solid fa-file-import mb-1 text-lg"></i>
                   <span className="text-xs">Importo JSON</span>
                 </button>
-                {/* Input-i i fshehur për ngarkimin e skedarit */}
                 <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportJSON} className="hidden" />
               </div>
 
