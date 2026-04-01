@@ -7,13 +7,10 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>TimeShift</title>
   
-  <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
   
-  <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   
-  <!-- React & Babel -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -86,52 +83,82 @@
 
       const getTodayStr = () => new Date().toISOString().split('T')[0];
 
-      // --- LLOGARITJET (TË PËRDITËSUARA PËR 225%) ---
+      // --- LLOGARITJET (TË PËRDITËSUARA ME 3 FASHA ORARE) ---
       const calculateEntryStats = (entry) => {
-        let hours = 0; 
+        let totalHours = 0; 
         let pay = 0; 
-        let multiplier = 1; 
-        let baseCompensation = 0; // Për kompensimet fikse të festave
+        let baseCompensation = 0;
         
-        // Llogaritja e orëve fizike të punuara
-        if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
-          const start = new Date(`2000-01-01T${entry.startTime}`);
-          const end = new Date(`2000-01-01T${entry.endTime}`);
-          let diff = (end - start) / (1000 * 60 * 60);
-          if (diff < 0) diff += 24;
-          const breakHours = (entry.breakMinutes || 0) / 60;
-          hours = Math.max(0, diff - breakHours);
+        // Koeficientët bazë (Ditë normale pune)
+        let multNormal = 1.00;  // 100% (06:00 - 19:00)
+        let multEvening = 1.20; // 120% (19:00 - 22:00)
+        let multNight = 1.50;   // 150% (22:00 - 06:00)
+
+        // Ndryshimi i koeficientëve për Fundjavë / Festa
+        if (entry.type === 'work_weekend' || entry.type === 'work_holiday') {
+          multNormal = 1.25;  // 125%
+          multEvening = 1.45; // 145%
+          multNight = 1.75;   // 175%
         }
 
-        // Përcaktimi i koeficientëve
-        switch (entry.type) {
-          case 'work': 
-            multiplier = 1; 
-            break;
-          case 'work_weekend': 
-            multiplier = 1.25; 
-            break;
-          case 'work_holiday': 
-            // 125% e orëve të punuara + 8 orë kompensim fiks = Praktikisht 225% nëse punohet 8 orë
-            multiplier = 1.25; 
-            baseCompensation = 8 * config.hourlyRate; 
-            break;
-          case 'leave': 
-            hours = 8; 
-            multiplier = 1; 
-            break;
-          case 'sick': 
-            hours = 8; 
-            multiplier = 0.7; 
-            break;
-          case 'holiday_off': 
-            hours = 8; 
-            multiplier = 1; 
-            break;
+        // Festa kombëtare merr + 8 orë kompensim fiks (1 ditë pune)
+        if (entry.type === 'work_holiday') {
+          baseCompensation = 8 * config.hourlyRate; 
         }
-        
-        pay = (hours * config.hourlyRate * multiplier) + baseCompensation + (Number(entry.bonus) || 0);
-        return { hours, pay };
+
+        // Llogaritjet për ditët pa orare (Leje, Raporte, Festa pushim)
+        if (['leave', 'holiday_off'].includes(entry.type)) {
+          return { hours: 8, pay: (8 * config.hourlyRate * 1.0) + (Number(entry.bonus) || 0) };
+        }
+        if (entry.type === 'sick') {
+          return { hours: 8, pay: (8 * config.hourlyRate * 0.7) + (Number(entry.bonus) || 0) }; // 70%
+        }
+
+        // Llogaritja e detajuar për ditët me orar pune
+        if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
+          const [sHour, sMin] = entry.startTime.split(':').map(Number);
+          const [eHour, eMin] = entry.endTime.split(':').map(Number);
+          
+          const start = sHour + (sMin / 60);
+          let end = eHour + (eMin / 60);
+
+          // Rregullimi nëse turni kalon mesnatën (psh. mbaron në 02:00 të mëngjesit)
+          if (end < start) end += 24;
+
+          // Funksion për të gjetur orët e mbivendosura (Overlap)
+          const getOverlap = (s1, e1, s2, e2) => Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
+
+          // Nxjerrja e orëve bruto për secilën fashë
+          // Përdorim orare deri në 48h për të mbuluar turnet që kalojnë mesnatën
+          let rawNormal = getOverlap(start, end, 6, 19) + getOverlap(start, end, 30, 43);
+          let rawEvening = getOverlap(start, end, 19, 22) + getOverlap(start, end, 43, 46);
+          let rawNight = getOverlap(start, end, 0, 6) + getOverlap(start, end, 22, 30) + getOverlap(start, end, 46, 54);
+
+          const grossHours = rawNormal + rawEvening + rawNight;
+          const breakHours = (entry.breakMinutes || 0) / 60;
+          
+          // Orët neto të punuara pasi hiqet pushimi
+          totalHours = Math.max(0, grossHours - breakHours);
+
+          let actualNormal = 0, actualEvening = 0, actualNight = 0;
+
+          // Zbresim pushimin në mënyrë proporcionale nga të gjitha fashat e punuara
+          if (grossHours > 0) {
+            const ratio = totalHours / grossHours;
+            actualNormal = rawNormal * ratio;
+            actualEvening = rawEvening * ratio;
+            actualNight = rawNight * ratio;
+          }
+
+          // Përllogaritja finale e pagesës për secilën fashë
+          const payNormal = actualNormal * config.hourlyRate * multNormal;
+          const payEvening = actualEvening * config.hourlyRate * multEvening;
+          const payNight = actualNight * config.hourlyRate * multNight;
+
+          pay = payNormal + payEvening + payNight + baseCompensation + (Number(entry.bonus) || 0);
+        }
+
+        return { hours: totalHours, pay };
       };
 
       // Komponenti i Pasqyrës
@@ -530,4 +557,3 @@
   </script>
 </body>
 </html>
-
