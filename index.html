@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>TimeShift</title>
+  <title>TimeShift - Kalkulator Page</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
   
@@ -16,7 +16,6 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <style>
-    /* Rregullime për iPhone */
     .pb-safe { padding-bottom: calc(1rem + env(safe-area-inset-bottom)); }
     body { -webkit-tap-highlight-color: transparent; }
     
@@ -29,10 +28,13 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useRef, useMemo } = React;
 
-    // --- TË DHËNAT ---
+    // ============================================
+    // KONSTANTE
+    // ============================================
     const DEFAULT_CONFIG = { hourlyRate: 400, weeklyHours: 40 };
+    
     const TYPE_LABELS = {
       work: "🏢 Ditë pune",
       work_weekend: "🏖️ Fundjavë (Punë)",
@@ -41,6 +43,7 @@
       sick: "🤒 Raport Mjekësor",
       holiday_off: "🎈 Festë (Pushim)"
     };
+    
     const BREAK_OPTIONS = [
       { label: "0m", value: 0 },
       { label: "15m", value: 15 },
@@ -49,10 +52,16 @@
       { label: "Tjetër", value: -1 }
     ];
     
-    // Emrat e muajve në Shqip
-    const MONTH_NAMES = ["Janar", "Shkurt", "Mars", "Prill", "Maj", "Qershor", "Korrik", "Gusht", "Shtator", "Tetor", "Nëntor", "Dhjetor"];
+    const MONTH_NAMES = [
+      "Janar", "Shkurt", "Mars", "Prill", "Maj", "Qershor",
+      "Korrik", "Gusht", "Shtator", "Tetor", "Nëntor", "Dhjetor"
+    ];
 
-    // --- HOOK PËR LOCAL STORAGE ---
+    const DAYS_SHORT = ['Hën', 'Mar', 'Mër', 'Enj', 'Pre', 'Sht', 'Die'];
+
+    // ============================================
+    // HOOK: LOCAL STORAGE
+    // ============================================
     function useLocalStorage(key, initialValue) {
       const [storedValue, setStoredValue] = useState(() => {
         try {
@@ -62,34 +71,259 @@
           return initialValue;
         }
       });
+      
       const setValue = (value) => {
         try {
           const valueToStore = value instanceof Function ? value(storedValue) : value;
           setStoredValue(valueToStore);
           window.localStorage.setItem(key, JSON.stringify(valueToStore));
-        } catch (error) {}
+        } catch (error) {
+          console.error(error);
+        }
       };
+      
       return [storedValue, setValue];
     }
 
-    // --- APLIKACIONI KRYESOR ---
+    // ============================================
+    // FUNKSIONE NDIHMËSE
+    // ============================================
+    const getTodayStr = () => {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    // Merr fillimin e javës (E hënë)
+    const getWeekStart = (dateStr) => {
+      const date = new Date(dateStr + 'T12:00:00');
+      const day = date.getDay();
+      const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+      const monday = new Date(date.setDate(diff));
+      return monday.toISOString().split('T')[0];
+    };
+
+    // Merr të gjitha datat e një jave
+    const getWeekDates = (dateStr) => {
+      const weekStart = getWeekStart(dateStr);
+      const dates = [];
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(weekStart + 'T12:00:00');
+        d.setDate(d.getDate() + i);
+        dates.push(d.toISOString().split('T')[0]);
+      }
+      return dates;
+    };
+
+    // ============================================
+    // LLOGARITJA ME ORË SHTESË (OVERTIME)
+    // ============================================
+    const calculateEntryStats = (entry, allEntries, config) => {
+      let totalHours = 0;
+      let pay = 0;
+      let baseCompensation = 0;
+      let overtimeHours = 0;
+
+      // Multiplikatorët bazë
+      const multNormal = 1.00;   // 100% (06:00 - 19:00)
+      const multEvening = 1.20;  // 120% (19:00 - 22:00)
+      const multNight = 1.50;    // 150% (22:00 - 06:00)
+
+      // Multiplikatorët për fundjavë/festë
+      const multNormalWE = 1.25;   // 125%
+      const multEveningWE = 1.45;  // 145%
+      const multNightWE = 1.75;    // 175%
+
+      // Bonus orë shtesë
+      const overtimePremium = 0.25; // 25% shtesë
+
+      // Pagesa bazë për festë
+      if (entry.type === 'work_holiday') {
+        baseCompensation = 8 * config.hourlyRate;
+      }
+
+      // Pushim vjetor ose festë (pa punë)
+      if (['leave', 'holiday_off'].includes(entry.type)) {
+        return { 
+          hours: 8, 
+          pay: (8 * config.hourlyRate * 1.0) + (Number(entry.bonus) || 0),
+          overtimeHours: 0 
+        };
+      }
+
+      // Raport mjekësor
+      if (entry.type === 'sick') {
+        return { 
+          hours: 8, 
+          pay: (8 * config.hourlyRate * 0.7) + (Number(entry.bonus) || 0),
+          overtimeHours: 0
+        };
+      }
+
+      // Llogaritja për ditë pune
+      if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
+        const [sHour, sMin] = entry.startTime.split(':').map(Number);
+        const [eHour, eMin] = entry.endTime.split(':').map(Number);
+        
+        let start = sHour + (sMin / 60);
+        let end = eHour + (eMin / 60);
+
+        if (end < start) end += 24;
+
+        // Funksion për të gjetur mbivendosjen
+        const getOverlap = (s1, e1, s2, e2) => 
+          Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
+
+        // Orët sipas fashave
+        let rawNormal = getOverlap(start, end, 6, 19) + getOverlap(start, end, 30, 43);
+        let rawEvening = getOverlap(start, end, 19, 22) + getOverlap(start, end, 43, 46);
+        let rawNight = getOverlap(start, end, 0, 6) + getOverlap(start, end, 22, 30) + getOverlap(start, end, 46, 54);
+
+        const grossHours = rawNormal + rawEvening + rawNight;
+        const breakHours = (entry.breakMinutes || 0) / 60;
+        
+        totalHours = Math.max(0, grossHours - breakHours);
+
+        // Shpërndaj orët në mënyrë proporcionale
+        let actualNormal = 0, actualEvening = 0, actualNight = 0;
+
+        if (grossHours > 0) {
+          const ratio = totalHours / grossHours;
+          actualNormal = rawNormal * ratio;
+          actualEvening = rawEvening * ratio;
+          actualNight = rawNight * ratio;
+        }
+
+        // Zgjidh multiplikatorët (fundjavë/festë vs normale)
+        const isWeekendOrHoliday = entry.type === 'work_weekend' || entry.type === 'work_holiday';
+        const normalMult = isWeekendOrHoliday ? multNormalWE : multNormal;
+        const eveningMult = isWeekendOrHoliday ? multEveningWE : multEvening;
+        const nightMult = isWeekendOrHoliday ? multNightWE : multNight;
+
+        // ========================================
+        // LLOGARITJA E ORËVE SHTESË (OVERTIME)
+        // ========================================
+        // Gjej orët e punuara në këtë javë PARA këtij regjistrimi
+        const weekDates = getWeekDates(entry.date);
+        const weekEntries = allEntries.filter(e => 
+          weekDates.includes(e.date) && e.type.startsWith('work')
+        );
+        
+        // Rendit regjistrimet e javës nga data
+        weekEntries.sort((a, b) => {
+          if (a.date !== b.date) return a.date.localeCompare(b.date);
+          return (a.startTime || '').localeCompare(b.startTime || '');
+        });
+
+        // Gjej pozicionin e këtij regjistrimi
+        const currentIndex = weekEntries.findIndex(e => e.id === entry.id);
+        
+        // Llogarit orët e punuara para këtij regjistrimi
+        let hoursBeforeThisEntry = 0;
+        for (let i = 0; i < currentIndex; i++) {
+          const prevEntry = weekEntries[i];
+          if (prevEntry.startTime && prevEntry.endTime) {
+            const [psHour, psMin] = prevEntry.startTime.split(':').map(Number);
+            const [peHour, peMin] = prevEntry.endTime.split(':').map(Number);
+            let pStart = psHour + (psMin / 60);
+            let pEnd = peHour + (peMin / 60);
+            if (pEnd < pStart) pEnd += 24;
+            
+            const pGross = getOverlap(pStart, pEnd, 0, 24);
+            const pBreak = (prevEntry.breakMinutes || 0) / 60;
+            hoursBeforeThisEntry += Math.max(0, pGross - pBreak);
+          }
+        }
+
+        // Llogarit orët shtesë
+        const hoursUntilLimit = Math.max(0, config.weeklyHours - hoursBeforeThisEntry);
+        
+        if (hoursBeforeThisEntry >= config.weeklyHours) {
+          // Të gjitha orët janë shtesë
+          overtimeHours = totalHours;
+        } else if (hoursBeforeThisEntry + totalHours > config.weeklyHours) {
+          // Vetëm një pjesë është shtesë
+          overtimeHours = (hoursBeforeThisEntry + totalHours) - config.weeklyHours;
+        }
+
+        const regularHours = totalHours - overtimeHours;
+
+        // Shpërndaj orët rregullta dhe shtesë sipas fashave
+        let regularNormal = 0, regularEvening = 0, regularNight = 0;
+        let overtimeNormal = 0, overtimeEvening = 0, overtimeNight = 0;
+
+        if (regularHours > 0 && totalHours > 0) {
+          const regularRatio = regularHours / totalHours;
+          regularNormal = actualNormal * regularRatio;
+          regularEvening = actualEvening * regularRatio;
+          regularNight = actualNight * regularRatio;
+          
+          overtimeNormal = actualNormal - regularNormal;
+          overtimeEvening = actualEvening - regularEvening;
+          overtimeNight = actualNight - regularNight;
+        } else {
+          overtimeNormal = actualNormal;
+          overtimeEvening = actualEvening;
+          overtimeNight = actualNight;
+        }
+
+        // Llogarit pagesën
+        // Orët rregullta
+        const payRegularNormal = regularNormal * config.hourlyRate * normalMult;
+        const payRegularEvening = regularEvening * config.hourlyRate * eveningMult;
+        const payRegularNight = regularNight * config.hourlyRate * nightMult;
+
+        // Orët shtesë (me 25% bonus shtesë)
+        const payOvertimeNormal = overtimeNormal * config.hourlyRate * (normalMult + overtimePremium);
+        const payOvertimeEvening = overtimeEvening * config.hourlyRate * (eveningMult + overtimePremium);
+        const payOvertimeNight = overtimeNight * config.hourlyRate * (nightMult + overtimePremium);
+
+        pay = payRegularNormal + payRegularEvening + payRegularNight + 
+              payOvertimeNormal + payOvertimeEvening + payOvertimeNight + 
+              baseCompensation + (Number(entry.bonus) || 0);
+      }
+
+      return { hours: totalHours, pay, overtimeHours };
+    };
+
+    // ============================================
+    // APLIKACIONI KRYESOR
+    // ============================================
     function TimeShiftApp() {
       const [activeTab, setActiveTab] = useState('dashboard');
-      const [entries, setEntries] = useLocalStorage('timeshift_entries_v2', []);
-      const [config, setConfig] = useLocalStorage('timeshift_config_v2', DEFAULT_CONFIG);
+      const [entries, setEntries] = useLocalStorage('timeshift_entries_v4', []);
+      const [config, setConfig] = useLocalStorage('timeshift_config_v4', DEFAULT_CONFIG);
       const [toast, setToast] = useState(null);
-      
-      // Gjendja për muajin që po shikohet (Navigimi i muajve)
       const [viewDate, setViewDate] = useState(new Date());
+      const [confirmModal, setConfirmModal] = useState(null);
+      const [confirmInput, setConfirmInput] = useState('');
 
       const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
         setTimeout(() => setToast(null), 2500);
       };
 
-      const getTodayStr = () => new Date().toISOString().split('T')[0];
-      
-      // Funksionet për ndryshimin e muajit
+      // Modal konfirmimi
+      const showConfirmModal = (options) => {
+        setConfirmModal({ ...options, isOpen: true });
+        setConfirmInput('');
+      };
+
+      const closeConfirmModal = () => {
+        setConfirmModal(null);
+        setConfirmInput('');
+      };
+
+      const handleConfirm = () => {
+        if (confirmModal && confirmInput === confirmModal.confirmPhrase) {
+          confirmModal.onConfirm();
+          closeConfirmModal();
+        }
+      };
+
+      // Navigimi i muajve
       const changeMonth = (offset) => {
         setViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + offset, 1));
       };
@@ -98,73 +332,87 @@
         return `${MONTH_NAMES[date.getMonth()]} ${date.getFullYear()}`;
       };
 
-      // --- LLOGARITJET (ME 3 FASHA ORARE) ---
-      const calculateEntryStats = (entry) => {
-        let totalHours = 0; 
-        let pay = 0; 
-        let baseCompensation = 0;
-        
-        let multNormal = 1.00;  // 100% (06:00 - 19:00)
-        let multEvening = 1.20; // 120% (19:00 - 22:00)
-        let multNight = 1.50;   // 150% (22:00 - 06:00)
+      // ============================================
+      // KOMPONENTI: MODAL KONFIRMIMI
+      // ============================================
+      const ConfirmModalComponent = () => {
+        if (!confirmModal?.isOpen) return null;
 
-        if (entry.type === 'work_weekend' || entry.type === 'work_holiday') {
-          multNormal = 1.25;  
-          multEvening = 1.45; 
-          multNight = 1.75;   
-        }
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+            <div className="bg-slate-900 border border-slate-700 rounded-[2rem] shadow-2xl max-w-sm w-full overflow-hidden">
+              {/* Header */}
+              <div className={`p-6 ${confirmModal.type === 'danger' ? 'bg-red-950/30 border-b border-red-900/50' : 'bg-amber-950/30 border-b border-amber-900/50'}`}>
+                <div className="flex items-start gap-4">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 ${confirmModal.type === 'danger' ? 'bg-red-900/50 text-red-400' : 'bg-amber-900/50 text-amber-400'}`}>
+                    <i className={`fa-solid ${confirmModal.type === 'danger' ? 'fa-triangle-exclamation' : 'fa-circle-exclamation'} text-xl`}></i>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-white font-bold text-lg mb-1">{confirmModal.title}</h3>
+                    <p className="text-slate-300 text-sm leading-relaxed">{confirmModal.message}</p>
+                  </div>
+                </div>
+              </div>
 
-        if (entry.type === 'work_holiday') {
-          baseCompensation = 8 * config.hourlyRate; 
-        }
+              {/* Body */}
+              <div className="p-6 space-y-4">
+                <div className="bg-slate-950 rounded-2xl p-4 border border-slate-800">
+                  <p className="text-xs text-slate-400 uppercase tracking-wide mb-2 font-medium">
+                    Shkruaj për të konfirmuar:
+                  </p>
+                  <div className="bg-slate-900 px-3 py-2 rounded-xl border border-slate-700 font-mono text-amber-400 text-sm mb-3 select-all">
+                    {confirmModal.confirmPhrase}
+                  </div>
+                  <input
+                    type="text"
+                    value={confirmInput}
+                    onChange={(e) => setConfirmInput(e.target.value)}
+                    placeholder="Shkruaj frazën e mësipërme..."
+                    className="w-full bg-slate-900 text-white px-4 py-3 rounded-xl border border-slate-700 outline-none focus:border-indigo-500 font-mono text-sm"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && confirmInput === confirmModal.confirmPhrase) {
+                        handleConfirm();
+                      }
+                    }}
+                  />
+                </div>
 
-        if (['leave', 'holiday_off'].includes(entry.type)) {
-          return { hours: 8, pay: (8 * config.hourlyRate * 1.0) + (Number(entry.bonus) || 0) };
-        }
-        if (entry.type === 'sick') {
-          return { hours: 8, pay: (8 * config.hourlyRate * 0.7) + (Number(entry.bonus) || 0) }; 
-        }
+                <div className="flex gap-3">
+                  <button
+                    onClick={closeConfirmModal}
+                    className="flex-1 py-3.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-2xl border border-slate-700 transition-colors"
+                  >
+                    Anulo
+                  </button>
+                  <button
+                    onClick={handleConfirm}
+                    disabled={confirmInput !== confirmModal.confirmPhrase}
+                    className={`flex-1 py-3.5 font-bold rounded-2xl transition-all ${
+                      confirmInput === confirmModal.confirmPhrase
+                        ? confirmModal.type === 'danger'
+                          ? 'bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-900/50 active:scale-95'
+                          : 'bg-amber-600 hover:bg-amber-700 text-white shadow-lg shadow-amber-900/50 active:scale-95'
+                        : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-slate-700'
+                    }`}
+                  >
+                    {confirmModal.confirmText}
+                  </button>
+                </div>
 
-        if (entry.type.startsWith('work') && entry.startTime && entry.endTime) {
-          const [sHour, sMin] = entry.startTime.split(':').map(Number);
-          const [eHour, eMin] = entry.endTime.split(':').map(Number);
-          
-          const start = sHour + (sMin / 60);
-          let end = eHour + (eMin / 60);
-
-          if (end < start) end += 24;
-
-          const getOverlap = (s1, e1, s2, e2) => Math.max(0, Math.min(e1, e2) - Math.max(s1, s2));
-
-          let rawNormal = getOverlap(start, end, 6, 19) + getOverlap(start, end, 30, 43);
-          let rawEvening = getOverlap(start, end, 19, 22) + getOverlap(start, end, 43, 46);
-          let rawNight = getOverlap(start, end, 0, 6) + getOverlap(start, end, 22, 30) + getOverlap(start, end, 46, 54);
-
-          const grossHours = rawNormal + rawEvening + rawNight;
-          const breakHours = (entry.breakMinutes || 0) / 60;
-          
-          totalHours = Math.max(0, grossHours - breakHours);
-
-          let actualNormal = 0, actualEvening = 0, actualNight = 0;
-
-          if (grossHours > 0) {
-            const ratio = totalHours / grossHours;
-            actualNormal = rawNormal * ratio;
-            actualEvening = rawEvening * ratio;
-            actualNight = rawNight * ratio;
-          }
-
-          const payNormal = actualNormal * config.hourlyRate * multNormal;
-          const payEvening = actualEvening * config.hourlyRate * multEvening;
-          const payNight = actualNight * config.hourlyRate * multNight;
-
-          pay = payNormal + payEvening + payNight + baseCompensation + (Number(entry.bonus) || 0);
-        }
-
-        return { hours: totalHours, pay };
+                <p className="text-center text-xs text-slate-500">
+                  <i className="fa-solid fa-shield-halved mr-1"></i>
+                  Ky veprim mbron të dhënat tuaja nga fshirja aksidentale
+                </p>
+              </div>
+            </div>
+          </div>
+        );
       };
 
-      // Komponent i përbashkët për navigimin e muajit
+      // ============================================
+      // KOMPONENTI: PËRZGJEDHËSI I MUAJIT
+      // ============================================
       const MonthSelector = () => (
         <div className="flex items-center justify-between bg-slate-800/60 p-2 rounded-2xl border border-slate-700/50 mb-6 shadow-sm">
           <button onClick={() => changeMonth(-1)} className="w-12 h-12 rounded-xl bg-slate-700/50 flex items-center justify-center text-slate-300 active:bg-slate-600 active:scale-95 transition-all">
@@ -179,18 +427,25 @@
         </div>
       );
 
-      // Komponenti i Pasqyrës
+      // ============================================
+      // KOMPONENTI: DASHBOARD
+      // ============================================
       const Dashboard = () => {
         const monthEntries = entries.filter(e => {
-          const d = new Date(e.date);
-          // Filtrojmë bazuar tek muaji i zgjedhur në UI, jo muaji aktual real
+          const d = new Date(e.date + 'T12:00:00');
           return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
         });
         
-        let totalHours = 0; let totalPay = 0; let daysWorked = 0;
+        let totalHours = 0; 
+        let totalPay = 0; 
+        let daysWorked = 0;
+        let totalOvertimeHours = 0;
+
         monthEntries.forEach(e => {
-          const stats = calculateEntryStats(e);
-          totalHours += stats.hours; totalPay += stats.pay;
+          const stats = calculateEntryStats(e, entries, config);
+          totalHours += stats.hours; 
+          totalPay += stats.pay;
+          totalOvertimeHours += stats.overtimeHours || 0;
           if (e.type.startsWith('work')) daysWorked++;
         });
 
@@ -204,21 +459,52 @@
             
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-gradient-to-br from-indigo-900/50 to-blue-900/30 p-5 rounded-3xl border border-indigo-500/20 shadow-lg">
-                <div className="text-indigo-400 mb-2"><i className="fa-solid fa-clock mr-2"></i><span className="font-medium text-sm">Orë Totale</span></div>
+                <div className="text-indigo-400 mb-2">
+                  <i className="fa-solid fa-clock mr-2"></i>
+                  <span className="font-medium text-sm">Orë Totale</span>
+                </div>
                 <div className="text-3xl font-bold text-white">{totalHours.toFixed(1)}</div>
               </div>
               <div className="bg-gradient-to-br from-amber-900/50 to-orange-900/30 p-5 rounded-3xl border border-amber-500/20 shadow-lg">
-                <div className="text-amber-400 mb-2"><i className="fa-solid fa-wallet mr-2"></i><span className="font-medium text-sm">Të Ardhura</span></div>
-                <div className="text-2xl font-bold text-white">{totalPay.toLocaleString()} <span className="text-sm font-normal text-amber-200">ALL</span></div>
+                <div className="text-amber-400 mb-2">
+                  <i className="fa-solid fa-wallet mr-2"></i>
+                  <span className="font-medium text-sm">Të Ardhura</span>
+                </div>
+                <div className="text-2xl font-bold text-white">
+                  {totalPay.toLocaleString()} 
+                  <span className="text-sm font-normal text-amber-200"> ALL</span>
+                </div>
               </div>
             </div>
+
+            {/* Kartela e orëve shtesë */}
+            {totalOvertimeHours > 0 && (
+              <div className="bg-gradient-to-br from-emerald-900/40 to-green-900/20 p-5 rounded-3xl border border-emerald-500/20 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-emerald-400 mb-1">
+                      <i className="fa-solid fa-clock-rotate-left mr-2"></i>
+                      <span className="font-medium text-sm">Orë Shtesë</span>
+                    </div>
+                    <div className="text-2xl font-bold text-white">{totalOvertimeHours.toFixed(1)}h</div>
+                  </div>
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 flex items-center justify-center">
+                    <span className="text-xl font-bold text-emerald-400">+25%</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="bg-slate-800/50 rounded-3xl p-5 border border-slate-700/50 shadow-sm mt-2">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-white font-medium"><i className="fa-regular fa-calendar mr-2 text-slate-400"></i>Ditë Pune</h3>
+                <h3 className="text-white font-medium">
+                  <i className="fa-regular fa-calendar mr-2 text-slate-400"></i>
+                  Ditë Pune
+                </h3>
                 <span className="text-xl font-bold text-indigo-400">{daysWorked}</span>
               </div>
               <div className="w-full bg-slate-700 rounded-full h-2.5">
-                <div className="bg-indigo-500 h-2.5 rounded-full" style={{ width: `${Math.min((daysWorked/22)*100, 100)}%` }}></div>
+                <div className="bg-indigo-500 h-2.5 rounded-full transition-all" style={{ width: `${Math.min((daysWorked/22)*100, 100)}%` }}></div>
               </div>
               <p className="text-xs text-slate-500 mt-3 text-right">~22 ditë pune në muaj</p>
             </div>
@@ -226,11 +512,20 @@
         );
       };
 
-      // Komponenti i Shtimit/Ndryshimit
+      // ============================================
+      // KOMPONENTI: SHTO/NDRYSHO REGJISTRIM
+      // ============================================
       const AddEntry = ({ editData = null, onSaveComplete = null }) => {
         const [formData, setFormData] = useState(editData || {
-          id: Date.now().toString(), date: getTodayStr(), type: 'work',
-          startTime: '08:00', endTime: '16:00', breakMinutes: 0, customBreak: '', bonus: '', note: ''
+          id: Date.now().toString(), 
+          date: getTodayStr(), 
+          type: 'work',
+          startTime: '08:00', 
+          endTime: '16:00', 
+          breakMinutes: 0, 
+          customBreak: '', 
+          bonus: '', 
+          note: ''
         });
 
         const isWork = formData.type.startsWith('work');
@@ -238,7 +533,12 @@
 
         const handleSave = () => {
           if (!formData.date) return showToast("Zgjidhni datën!", "error");
-          const finalData = { ...formData, breakMinutes: isCustomBreak ? Number(formData.customBreak || 0) : formData.breakMinutes };
+          
+          const finalData = { 
+            ...formData, 
+            breakMinutes: isCustomBreak ? Number(formData.customBreak || 0) : formData.breakMinutes 
+          };
+          
           if (editData) {
             setEntries(entries.map(e => e.id === editData.id ? finalData : e));
             showToast("U përditësua me sukses!");
@@ -253,57 +553,126 @@
         return (
           <div className="p-5 space-y-5 pb-28 animate-fade-in">
             <header className="mb-4 pt-4">
-              <h1 className="text-3xl font-bold text-white tracking-tight">{editData ? 'Ndrysho' : 'Shto Ditë'}</h1>
+              <h1 className="text-3xl font-bold text-white tracking-tight">
+                {editData ? 'Ndrysho' : 'Shto Ditë'}
+              </h1>
             </header>
+            
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-400 uppercase ml-1">Data</label>
-                  <input type="date" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                  <input 
+                    type="date" 
+                    value={formData.date} 
+                    onChange={e => setFormData({...formData, date: e.target.value})} 
+                    className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" 
+                  />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-400 uppercase ml-1">Lloji</label>
-                  <select value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none">
-                    {Object.entries(TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                  <select 
+                    value={formData.type} 
+                    onChange={e => setFormData({...formData, type: e.target.value})} 
+                    className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none"
+                  >
+                    {Object.entries(TYPE_LABELS).map(([key, label]) => 
+                      <option key={key} value={key}>{label}</option>
+                    )}
                   </select>
                 </div>
               </div>
+
               {isWork && (
                 <div className="p-5 bg-slate-800/40 rounded-3xl border border-slate-700/50 space-y-5">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-clock mr-1"></i> Fillimi</label>
-                      <input type="time" value={formData.startTime} onChange={e => setFormData({...formData, startTime: e.target.value})} className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                      <label className="text-xs font-medium text-slate-400 uppercase ml-1">
+                        <i className="fa-solid fa-clock mr-1"></i> Fillimi
+                      </label>
+                      <input 
+                        type="time" 
+                        value={formData.startTime} 
+                        onChange={e => setFormData({...formData, startTime: e.target.value})} 
+                        className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" 
+                      />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-clock mr-1"></i> Mbarimi</label>
-                      <input type="time" value={formData.endTime} onChange={e => setFormData({...formData, endTime: e.target.value})} className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                      <label className="text-xs font-medium text-slate-400 uppercase ml-1">
+                        <i className="fa-solid fa-clock mr-1"></i> Mbarimi
+                      </label>
+                      <input 
+                        type="time" 
+                        value={formData.endTime} 
+                        onChange={e => setFormData({...formData, endTime: e.target.value})} 
+                        className="w-full bg-slate-900/50 text-white p-4 rounded-2xl border border-slate-700 outline-none" 
+                      />
                     </div>
                   </div>
+                  
                   <div className="space-y-2">
-                    <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-mug-hot mr-1"></i> Pushimi</label>
+                    <label className="text-xs font-medium text-slate-400 uppercase ml-1">
+                      <i className="fa-solid fa-mug-hot mr-1"></i> Pushimi
+                    </label>
                     <div className="flex flex-wrap gap-2">
                       {BREAK_OPTIONS.map(opt => (
-                        <button key={opt.value} onClick={() => setFormData({...formData, breakMinutes: opt.value})} className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${formData.breakMinutes === opt.value ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
+                        <button 
+                          key={opt.value} 
+                          onClick={() => setFormData({...formData, breakMinutes: opt.value})} 
+                          className={`px-4 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+                            formData.breakMinutes === opt.value 
+                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/50' 
+                              : 'bg-slate-800 text-slate-300 border border-slate-700'
+                          }`}
+                        >
                           {opt.label}
                         </button>
                       ))}
                     </div>
-                    {isCustomBreak && <input type="number" placeholder="Minuta..." value={formData.customBreak} onChange={e => setFormData({...formData, customBreak: e.target.value})} className="w-full mt-3 bg-slate-900/50 text-white p-4 rounded-2xl border border-amber-500/50 outline-none" />}
+                    {isCustomBreak && (
+                      <input 
+                        type="number" 
+                        placeholder="Minuta..." 
+                        value={formData.customBreak} 
+                        onChange={e => setFormData({...formData, customBreak: e.target.value})} 
+                        className="w-full mt-3 bg-slate-900/50 text-white p-4 rounded-2xl border border-amber-500/50 outline-none" 
+                      />
+                    )}
                   </div>
                 </div>
               )}
+
               <div className="space-y-4">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-amber-400 uppercase ml-1"><i className="fa-solid fa-gift mr-1"></i> Bonus (Lekë)</label>
-                  <input type="number" placeholder="0" value={formData.bonus} onChange={e => setFormData({...formData, bonus: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                  <label className="text-xs font-medium text-amber-400 uppercase ml-1">
+                    <i className="fa-solid fa-gift mr-1"></i> Bonus (Lekë)
+                  </label>
+                  <input 
+                    type="number" 
+                    placeholder="0" 
+                    value={formData.bonus} 
+                    onChange={e => setFormData({...formData, bonus: e.target.value})} 
+                    className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" 
+                  />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-400 uppercase ml-1"><i className="fa-solid fa-file-lines mr-1"></i> Shënim</label>
-                  <input type="text" placeholder="Psh. Projekt i ri..." value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" />
+                  <label className="text-xs font-medium text-slate-400 uppercase ml-1">
+                    <i className="fa-solid fa-file-lines mr-1"></i> Shënim
+                  </label>
+                  <input 
+                    type="text" 
+                    placeholder="Psh. Projekt i ri..." 
+                    value={formData.note} 
+                    onChange={e => setFormData({...formData, note: e.target.value})} 
+                    className="w-full bg-slate-800/80 text-white p-4 rounded-2xl border border-slate-700 outline-none" 
+                  />
                 </div>
               </div>
-              <button onClick={handleSave} className="w-full py-4 mt-6 bg-indigo-600 active:bg-indigo-700 text-white font-bold rounded-2xl shadow-lg shadow-indigo-500/30 text-lg transition-transform active:scale-95">
+
+              <button 
+                onClick={handleSave} 
+                className="w-full py-4 mt-6 bg-indigo-600 active:bg-indigo-700 text-white font-bold rounded-2xl shadow-lg shadow-indigo-500/30 text-lg transition-transform active:scale-95"
+              >
                 <i className="fa-solid fa-circle-check mr-2"></i> Ruaj të Dhënat
               </button>
             </div>
@@ -311,33 +680,55 @@
         );
       };
 
-      // Komponenti i Historisë
+      // ============================================
+      // KOMPONENTI: HISTORIA
+      // ============================================
       const History = () => {
         const [editingEntry, setEditingEntry] = useState(null);
         
-        // Filtrojmë edhe historinë sipas muajit të zgjedhur
         const monthEntries = entries.filter(e => {
-          const d = new Date(e.date);
+          const d = new Date(e.date + 'T12:00:00');
           return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
         });
         
-        const sortedEntries = [...monthEntries].sort((a, b) => new Date(b.date) - new Date(a.date));
+        const sortedEntries = [...monthEntries].sort((a, b) => 
+          new Date(b.date).getTime() - new Date(a.date).getTime()
+        );
 
         const deleteEntry = (id) => {
-          if(window.confirm("Je i sigurt që do ta fshish këtë ditë?")) {
-            setEntries(entries.filter(e => e.id !== id));
-            setEditingEntry(null);
-            showToast("U fshi!", "success");
-          }
+          const entry = entries.find(e => e.id === id);
+          if (!entry) return;
+          
+          const dateStr = entry.date.split('-').reverse().join('/');
+          showConfirmModal({
+            title: 'Fshi Regjistrimin',
+            message: `Je duke fshirë regjistrimin për datën ${dateStr}. Ky veprim NUK mund të zhbëhet!`,
+            confirmText: 'Fshi Regjistrimin',
+            confirmPhrase: `FSHI/${entry.date}`,
+            type: 'danger',
+            onConfirm: () => {
+              setEntries(entries.filter(e => e.id !== id));
+              setEditingEntry(null);
+              showToast("Regjistrimi u fshi!", "success");
+            }
+          });
         };
 
         if (editingEntry) {
           return (
             <div className="relative animate-fade-in">
-              <button onClick={() => setEditingEntry(null)} className="absolute top-8 right-5 z-10 p-2 bg-slate-800 rounded-full text-slate-300 w-10 h-10 flex items-center justify-center shadow-lg"><i className="fa-solid fa-times"></i></button>
+              <button 
+                onClick={() => setEditingEntry(null)} 
+                className="absolute top-8 right-5 z-10 p-2 bg-slate-800 rounded-full text-slate-300 w-10 h-10 flex items-center justify-center shadow-lg"
+              >
+                <i className="fa-solid fa-times"></i>
+              </button>
               <AddEntry editData={editingEntry} onSaveComplete={() => setEditingEntry(null)} />
               <div className="px-5 pb-28">
-                <button onClick={() => deleteEntry(editingEntry.id)} className="w-full py-4 bg-red-900/40 text-red-400 font-bold rounded-2xl border border-red-900/50">
+                <button 
+                  onClick={() => deleteEntry(editingEntry.id)} 
+                  className="w-full py-4 bg-red-900/40 text-red-400 font-bold rounded-2xl border border-red-900/50"
+                >
                   <i className="fa-solid fa-trash mr-2"></i> Fshi këtë regjistrim
                 </button>
               </div>
@@ -354,23 +745,46 @@
             <MonthSelector />
             
             {sortedEntries.length === 0 ? (
-              <div className="text-center py-10 text-slate-500 bg-slate-800/30 rounded-3xl border border-slate-700/30">Nuk ka të dhëna për këtë muaj.</div>
+              <div className="text-center py-10 text-slate-500 bg-slate-800/30 rounded-3xl border border-slate-700/30">
+                Nuk ka të dhëna për këtë muaj.
+              </div>
             ) : (
               <div className="space-y-3">
                 {sortedEntries.map(entry => {
-                  const stats = calculateEntryStats(entry);
+                  const stats = calculateEntryStats(entry, entries, config);
                   const isWork = entry.type.startsWith('work');
+                  const hasOvertime = stats.overtimeHours > 0;
+                  
                   return (
-                    <div key={entry.id} onClick={() => setEditingEntry(entry)} className="bg-slate-800/60 p-4 rounded-3xl border border-slate-700/50 flex items-center justify-between active:scale-[0.98] transition-transform cursor-pointer shadow-sm">
+                    <div 
+                      key={entry.id} 
+                      onClick={() => setEditingEntry(entry)} 
+                      className="bg-slate-800/60 p-4 rounded-3xl border border-slate-700/50 flex items-center justify-between active:scale-[0.98] transition-transform cursor-pointer shadow-sm"
+                    >
                       <div>
-                        <div className="text-white font-medium mb-1 text-lg">{entry.date.split('-').reverse().join('/')}</div>
-                        <div className="flex items-center text-xs text-slate-400 space-x-2">
-                          <span className="bg-slate-700/50 px-2.5 py-1 rounded-md text-indigo-300">{TYPE_LABELS[entry.type].split(' ')[0]} {isWork ? `${stats.hours.toFixed(1)}h` : '8h'}</span>
-                          {entry.bonus && <span className="text-amber-400"><i className="fa-solid fa-gift mr-1"></i> +{entry.bonus}</span>}
+                        <div className="text-white font-medium mb-1 text-lg">
+                          {entry.date.split('-').reverse().join('/')}
+                        </div>
+                        <div className="flex items-center text-xs text-slate-400 space-x-2 flex-wrap gap-1">
+                          <span className="bg-slate-700/50 px-2.5 py-1 rounded-md text-indigo-300">
+                            {TYPE_LABELS[entry.type].split(' ')[0]} {isWork ? `${stats.hours.toFixed(1)}h` : '8h'}
+                          </span>
+                          {hasOvertime && (
+                            <span className="bg-emerald-900/50 px-2 py-1 rounded-md text-emerald-400">
+                              +{stats.overtimeHours.toFixed(1)}h
+                            </span>
+                          )}
+                          {entry.bonus && (
+                            <span className="text-amber-400">
+                              <i className="fa-solid fa-gift mr-1"></i> +{entry.bonus}
+                            </span>
+                          )}
                         </div>
                       </div>
                       <div className="flex flex-col items-end">
-                        <span className="text-emerald-400 font-bold text-lg">{stats.pay.toLocaleString()} L</span>
+                        <span className="text-emerald-400 font-bold text-lg">
+                          {stats.pay.toLocaleString()} L
+                        </span>
                         <i className="fa-solid fa-chevron-right text-slate-500 mt-2 text-sm"></i>
                       </div>
                     </div>
@@ -382,19 +796,39 @@
         );
       };
 
-      // Komponenti i Pagës
+      // ============================================
+      // KOMPONENTI: PAGA ME DETAJE OVERTIME
+      // ============================================
       const Salary = () => {
         const monthEntries = entries.filter(e => {
-          const d = new Date(e.date);
+          const d = new Date(e.date + 'T12:00:00');
           return d.getMonth() === viewDate.getMonth() && d.getFullYear() === viewDate.getFullYear();
         });
         
-        let totalPay = 0; let basePay = 0; let bonusPay = 0;
+        let totalPay = 0; 
+        let basePay = 0; 
+        let bonusPay = 0;
+        let totalOvertimePay = 0;
+        let totalRegularPay = 0;
+        let totalOvertimeHours = 0;
+
         monthEntries.forEach(e => {
-          const stats = calculateEntryStats(e);
+          const stats = calculateEntryStats(e, entries, config);
           totalPay += stats.pay;
           if (e.bonus) bonusPay += Number(e.bonus);
-          basePay += (stats.pay - (Number(e.bonus) || 0));
+          
+          const entryBonus = Number(e.bonus) || 0;
+          const entryPay = stats.pay - entryBonus;
+          
+          if (stats.overtimeHours > 0 && stats.hours > 0) {
+            const overtimeRatio = stats.overtimeHours / stats.hours;
+            const entryOvertimePay = entryPay * overtimeRatio * (1 / 1.25); // Rikthe në bazë
+            totalOvertimePay += entryOvertimePay * 0.25; // Vetëm bonusi 25%
+            totalRegularPay += entryPay - (entryOvertimePay * 0.25);
+            totalOvertimeHours += stats.overtimeHours;
+          } else {
+            totalRegularPay += entryPay;
+          }
         });
 
         return (
@@ -406,26 +840,79 @@
             <MonthSelector />
             
             <div className="bg-gradient-to-b from-emerald-900/50 to-slate-900 p-8 rounded-[2rem] border border-emerald-500/20 text-center shadow-xl">
-              <p className="text-emerald-400/80 text-sm font-medium uppercase tracking-wider mb-2">Totali i Përllogaritur</p>
-              <h2 className="text-5xl font-black text-white mb-2">{totalPay.toLocaleString()}</h2>
+              <p className="text-emerald-400/80 text-sm font-medium uppercase tracking-wider mb-2">
+                Totali i Përllogaritur
+              </p>
+              <h2 className="text-5xl font-black text-white mb-2">
+                {totalPay.toLocaleString()}
+              </h2>
               <span className="text-xl text-emerald-500 font-medium">Lekë (ALL)</span>
             </div>
+
             <div className="space-y-3 mt-8">
-              <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider pl-2 mb-3">Detajet e fitimit</h3>
+              <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider pl-2 mb-3">
+                Detajet e fitimit
+              </h3>
+              
               <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-slate-700/50">
-                <div className="flex items-center text-slate-300"><i className="fa-solid fa-briefcase text-indigo-400 text-lg w-8"></i> Paga Bazë</div>
-                <div className="font-bold text-white text-lg">{basePay.toLocaleString()} L</div>
+                <div className="flex items-center text-slate-300">
+                  <i className="fa-solid fa-briefcase text-indigo-400 text-lg w-8"></i> 
+                  Paga Bazë
+                </div>
+                <div className="font-bold text-white text-lg">
+                  {totalRegularPay.toLocaleString()} L
+                </div>
               </div>
-              <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-slate-700/50">
-                <div className="flex items-center text-slate-300"><i className="fa-solid fa-gift text-amber-400 text-lg w-8"></i> Bonuse & Shtesa</div>
-                <div className="font-bold text-amber-400 text-lg">+{bonusPay.toLocaleString()} L</div>
-              </div>
+
+              {totalOvertimeHours > 0 && (
+                <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-emerald-900/50">
+                  <div className="flex items-center text-slate-300">
+                    <i className="fa-solid fa-clock-rotate-left text-emerald-400 text-lg w-8"></i> 
+                    <div>
+                      <div>Orë Shtesë (+25%)</div>
+                      <div className="text-xs text-slate-500">{totalOvertimeHours.toFixed(1)} orë</div>
+                    </div>
+                  </div>
+                  <div className="font-bold text-emerald-400 text-lg">
+                    +{totalOvertimePay.toLocaleString()} L
+                  </div>
+                </div>
+              )}
+
+              {bonusPay > 0 && (
+                <div className="bg-slate-800/50 p-5 rounded-3xl flex justify-between items-center border border-slate-700/50">
+                  <div className="flex items-center text-slate-300">
+                    <i className="fa-solid fa-gift text-amber-400 text-lg w-8"></i> 
+                    Bonuse & Shtesa
+                  </div>
+                  <div className="font-bold text-amber-400 text-lg">
+                    +{bonusPay.toLocaleString()} L
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Shpjegimi i orëve shtesë */}
+            <div className="mt-6 bg-slate-800/30 p-4 rounded-2xl border border-slate-700/30">
+              <h4 className="text-sm font-medium text-slate-400 mb-2">
+                <i className="fa-solid fa-circle-info mr-2"></i>
+                Si llogariten orët shtesë?
+              </h4>
+              <ul className="text-xs text-slate-500 space-y-1">
+                <li>• Orët mbi {config.weeklyHours}h/javë paguhen +25%</li>
+                <li>• Fasha 06:00-19:00: 100% → 125%</li>
+                <li>• Fasha 19:00-22:00: 120% → 145%</li>
+                <li>• Fasha 22:00-06:00: 150% → 175%</li>
+                <li>• Fundjavë/Festë: +25% bonus shtesë</li>
+              </ul>
             </div>
           </div>
         );
       };
 
-      // Komponenti i Opsioneve me Import / Eksport JSON
+      // ============================================
+      // KOMPONENTI: OPSIONET
+      // ============================================
       const SettingsTab = () => {
         const fileInputRef = useRef(null);
 
@@ -435,15 +922,25 @@
         };
 
         const handleClearData = () => {
-          if(window.confirm("KUJDES: Kjo do të fshijë TË GJITHA të dhënat tuaja. Jeni i sigurt?")) {
-            setEntries([]); showToast("Të dhënat u fshinë!", "success");
-          }
+          const totalEntries = entries.length;
+          const currentMonth = formatMonthYear(viewDate);
+          
+          showConfirmModal({
+            title: 'FSHI TË GJITHA TË DHËNAT',
+            message: `KUJDES: Do të fshihen ${totalEntries} regjistrime nga e gjithë databaza! Aktualisht je në muajin ${currentMonth}. Ky veprim është I PAKTHYESHËM!`,
+            confirmText: 'FSHI TË GJITHA',
+            confirmPhrase: 'FSHI GJITHÇKA',
+            type: 'danger',
+            onConfirm: () => {
+              setEntries([]);
+              showToast("Të gjitha të dhënat u fshinë!", "success");
+            }
+          });
         };
 
-        // Funksioni Eksport
         const handleExportJSON = () => {
           const exportData = {
-            version: '2.0',
+            version: '4.0',
             exportDate: new Date().toISOString(),
             config: config,
             entries: entries
@@ -463,7 +960,6 @@
           showToast("Të dhënat u eksportuan me sukses!");
         };
 
-        // Funksioni Import
         const handleImportJSON = (e) => {
           const file = e.target.files[0];
           if (!file) return;
@@ -473,21 +969,44 @@
             try {
               const importedData = JSON.parse(event.target.result);
               
-              if (importedData.entries && Array.isArray(importedData.entries)) {
-                setEntries(importedData.entries);
-              }
-              if (importedData.config) {
-                setConfig(importedData.config);
-              }
+              const importCount = importedData.entries?.length || 0;
+              const currentCount = entries.length;
               
-              showToast("Të dhënat u importuan me sukses!");
+              if (currentCount > 0) {
+                showConfirmModal({
+                  title: 'Importo Të Dhëna',
+                  message: `Aktualisht ke ${currentCount} regjistrime. Importi do të shtojë ${importCount} regjistrime të reja. Të dhënat ekzistuese NUK do të fshihen.`,
+                  confirmText: 'Importo Tani',
+                  confirmPhrase: `IMPORTO/${importCount}`,
+                  type: 'warning',
+                  onConfirm: () => {
+                    if (importedData.entries && Array.isArray(importedData.entries)) {
+                      const existingIds = new Set(entries.map(entry => entry.id));
+                      const newEntries = importedData.entries.filter(entry => !existingIds.has(entry.id));
+                      setEntries([...entries, ...newEntries]);
+                      showToast(`U importuan ${newEntries.length} regjistrime të reja!`);
+                    }
+                    if (importedData.config) {
+                      setConfig(importedData.config);
+                    }
+                  }
+                });
+              } else {
+                if (importedData.entries && Array.isArray(importedData.entries)) {
+                  setEntries(importedData.entries);
+                }
+                if (importedData.config) {
+                  setConfig(importedData.config);
+                }
+                showToast(`U importuan ${importCount} regjistrime!`);
+              }
             } catch (err) {
               showToast("Skedari nuk është i saktë (Invalid JSON)!", "error");
             }
           };
           reader.readAsText(file);
           
-          e.target.value = null;
+          e.target.value = '';
         };
 
         return (
@@ -495,35 +1014,61 @@
             <header className="mb-6 pt-4">
               <h1 className="text-3xl font-bold text-white tracking-tight">Opsione</h1>
             </header>
+            
             <div className="bg-slate-800/50 p-6 rounded-[2rem] border border-slate-700/50 space-y-5">
               <h3 className="text-sm font-medium text-indigo-400 uppercase tracking-wider">Tarifat</h3>
               <div className="space-y-2">
                 <label className="text-sm text-slate-300 ml-1">Pagesa për Orë (Lekë)</label>
-                <input type="number" name="hourlyRate" value={config.hourlyRate} onChange={handleSaveConfig} className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" />
+                <input 
+                  type="number" 
+                  name="hourlyRate" 
+                  value={config.hourlyRate} 
+                  onChange={handleSaveConfig} 
+                  className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" 
+                />
               </div>
               <div className="space-y-2">
-                <label className="text-sm text-slate-300 ml-1">Orët Javore Standarte</label>
-                <input type="number" name="weeklyHours" value={config.weeklyHours} onChange={handleSaveConfig} className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" />
+                <label className="text-sm text-slate-300 ml-1">Orët Javore Standarte (para orëve shtesë)</label>
+                <input 
+                  type="number" 
+                  name="weeklyHours" 
+                  value={config.weeklyHours} 
+                  onChange={handleSaveConfig} 
+                  className="w-full bg-slate-900 text-white p-4 rounded-2xl border border-slate-700 outline-none text-lg" 
+                />
               </div>
+              <p className="text-xs text-slate-500 mt-2">
+                <i className="fa-solid fa-circle-info mr-1"></i>
+                Orët mbi {config.weeklyHours}h/javë llogariten me +25% bonus
+              </p>
             </div>
 
             <div className="bg-slate-800/50 p-6 rounded-[2rem] border border-slate-700/50 space-y-4 mt-6">
               <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider mb-2">Të Dhënat</h3>
               
               <div className="grid grid-cols-2 gap-3 mb-2">
-                <button onClick={handleExportJSON} className="w-full py-3 bg-emerald-900/30 text-emerald-400 rounded-2xl border border-emerald-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
+                <button 
+                  onClick={handleExportJSON} 
+                  className="w-full py-3 bg-emerald-900/30 text-emerald-400 rounded-2xl border border-emerald-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform"
+                >
                   <i className="fa-solid fa-file-export mb-1 text-lg"></i>
                   <span className="text-xs">Eksporto JSON</span>
                 </button>
                 
-                <button onClick={() => fileInputRef.current.click()} className="w-full py-3 bg-blue-900/30 text-blue-400 rounded-2xl border border-blue-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform">
+                <button 
+                  onClick={() => fileInputRef.current?.click()} 
+                  className="w-full py-3 bg-blue-900/30 text-blue-400 rounded-2xl border border-blue-900/50 flex flex-col items-center justify-center font-medium active:scale-95 transition-transform"
+                >
                   <i className="fa-solid fa-file-import mb-1 text-lg"></i>
                   <span className="text-xs">Importo JSON</span>
                 </button>
                 <input type="file" accept=".json" ref={fileInputRef} onChange={handleImportJSON} className="hidden" />
               </div>
 
-              <button onClick={handleClearData} className="w-full py-4 mt-2 bg-red-900/30 text-red-400 rounded-2xl border border-red-900/50 flex items-center justify-center font-bold text-lg active:scale-95 transition-transform">
+              <button 
+                onClick={handleClearData} 
+                className="w-full py-4 mt-2 bg-red-900/30 text-red-400 rounded-2xl border border-red-900/50 flex items-center justify-center font-bold text-lg active:scale-95 transition-transform"
+              >
                 <i className="fa-solid fa-trash mr-2"></i> Fshi të gjitha
               </button>
             </div>
@@ -531,6 +1076,9 @@
         );
       };
 
+      // ============================================
+      // RENDERIMI KRYESOR
+      // ============================================
       return (
         <div className="max-w-md mx-auto min-h-screen relative bg-slate-900 shadow-2xl overflow-x-hidden">
           
@@ -542,43 +1090,62 @@
             {activeTab === 'settings' && <SettingsTab />}
           </div>
 
+          {/* Toast notification */}
           {toast && (
-            <div className="fixed top-8 left-1/2 transform -translate-x-1/2 z-50 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl border border-slate-700 flex items-center space-x-3">
+            <div className="fixed top-8 left-1/2 transform -translate-x-1/2 z-50 bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl border border-slate-700 flex items-center space-x-3 animate-fade-in">
               <i className={`fa-solid ${toast.type === 'success' ? 'fa-circle-check text-emerald-400' : 'fa-circle-exclamation text-amber-400'} text-xl`}></i>
               <span className="font-medium">{toast.msg}</span>
             </div>
           )}
 
+          {/* Modal konfirmimi */}
+          <ConfirmModalComponent />
+
+          {/* Navigation */}
           <nav className="fixed bottom-0 w-full max-w-md bg-slate-900/90 backdrop-blur-xl border-t border-slate-800 pb-safe pt-2 px-2 z-40">
             <div className="flex justify-around items-center h-16">
-              <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'dashboard' ? 'text-indigo-400' : 'text-slate-500'}`}>
+              <button 
+                onClick={() => setActiveTab('dashboard')} 
+                className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'dashboard' ? 'text-indigo-400' : 'text-slate-500'}`}
+              >
                 <i className="fa-solid fa-house text-xl"></i>
                 <span className="text-[10px] font-medium">Pasqyra</span>
               </button>
               
-              <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'history' ? 'text-indigo-400' : 'text-slate-500'}`}>
+              <button 
+                onClick={() => setActiveTab('history')} 
+                className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'history' ? 'text-indigo-400' : 'text-slate-500'}`}
+              >
                 <i className="fa-solid fa-list-ul text-xl"></i>
                 <span className="text-[10px] font-medium">Historia</span>
               </button>
               
               <div className="relative -top-6">
-                <button onClick={() => setActiveTab('add')} className={`w-14 h-14 rounded-full shadow-lg shadow-indigo-500/30 text-white flex items-center justify-center transition-transform active:scale-90 ${activeTab === 'add' ? 'bg-indigo-500 scale-110' : 'bg-indigo-600'}`}>
+                <button 
+                  onClick={() => setActiveTab('add')} 
+                  className={`w-14 h-14 rounded-full shadow-lg shadow-indigo-500/30 text-white flex items-center justify-center transition-transform active:scale-90 ${activeTab === 'add' ? 'bg-indigo-500 scale-110' : 'bg-indigo-600'}`}
+                >
                   <i className="fa-solid fa-plus text-2xl"></i>
                 </button>
               </div>
 
-              <button onClick={() => setActiveTab('salary')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'salary' ? 'text-indigo-400' : 'text-slate-500'}`}>
+              <button 
+                onClick={() => setActiveTab('salary')} 
+                className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'salary' ? 'text-indigo-400' : 'text-slate-500'}`}
+              >
                 <i className="fa-solid fa-wallet text-xl"></i>
                 <span className="text-[10px] font-medium">Paga</span>
               </button>
               
-              <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'settings' ? 'text-indigo-400' : 'text-slate-500'}`}>
+              <button 
+                onClick={() => setActiveTab('settings')} 
+                className={`flex flex-col items-center justify-center w-16 space-y-1 ${activeTab === 'settings' ? 'text-indigo-400' : 'text-slate-500'}`}
+              >
                 <i className="fa-solid fa-gear text-xl"></i>
                 <span className="text-[10px] font-medium">Opsione</span>
               </button>
             </div>
           </nav>
-
         </div>
       );
     }
